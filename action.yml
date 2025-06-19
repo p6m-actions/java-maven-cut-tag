@@ -1,36 +1,143 @@
 name: "Java Maven Cut Tag"
-description: "A simple GitHub Action that prints a greeting"
+description: "A GitHub Action for cutting versioned tags for Java Maven projects"
 author: "Jimmie Fulton <jimmie.fulton@gmail.com>"
 
 # Define the inputs for this action
 inputs:
-  who-to-greet:
-    description: "Who to greet"
-    required: true
-    default: "World"
-  message:
-    description: "Custom message to include"
+  version-level:
+    description: "Version bump level"
     required: false
-    default: "Hello"
+    default: "patch"
+    # Options: "patch", "minor", "major"
 
 # Define the outputs for this action
 outputs:
-  time:
-    description: "The time we greeted you"
-    value: ${{ steps.hello.outputs.time }}
+  version:
+    description: "The new version number"
+    value: ${{ steps.cut-tag.outputs.version }}
+  tag:
+    description: "The newly created tag"
+    value: ${{ steps.cut-tag.outputs.tag }}
 
 # Define the runs configuration
 runs:
   using: "composite"
   steps:
-    - name: Hello step
-      id: hello
+    - name: Set up Java
+      uses: actions/setup-java@v4
+      with:
+        java-version: '21'
+        distribution: 'temurin'
+    
+    - name: Cache Maven dependencies
+      uses: actions/cache@v4
+      with:
+        path: ~/.m2
+        key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
+        restore-keys: ${{ runner.os }}-m2
+    
+    - name: Cut Tag
+      id: cut-tag
       shell: bash
       run: |
-        echo "${{ inputs.message }}, ${{ inputs.who-to-greet }}!"
-        echo "time=$(date)" >> $GITHUB_OUTPUT
+        set -e
+        
+        # Validate version-level input
+        VERSION_LEVEL="${{ inputs.version-level }}"
+        if [[ ! "$VERSION_LEVEL" =~ ^(patch|minor|major)$ ]]; then
+          echo "Error: version-level must be 'patch', 'minor', or 'major'"
+          exit 1
+        fi
+        
+        # Check if we're in a git repository
+        if ! git rev-parse --git-dir > /dev/null 2>&1; then
+          echo "Error: Not in a git repository"
+          exit 1
+        fi
+        
+        # Check for uncommitted changes
+        if ! git diff-index --quiet HEAD --; then
+          echo "Error: There are uncommitted changes. Please commit or stash them first."
+          exit 1
+        fi
+        
+        # Get current version from pom.xml
+        CURRENT_VERSION=$(mvn -q -Dexec.executable=echo -Dexec.args='${project.version}' --non-recursive exec:exec 2>/dev/null | grep -v "INFO" | tail -1)
+        
+        if [[ -z "$CURRENT_VERSION" ]]; then
+          echo "Error: Could not determine current version from pom.xml"
+          exit 1
+        fi
+        
+        echo "Current version: $CURRENT_VERSION"
+        
+        # Remove -SNAPSHOT suffix if present
+        BASE_VERSION=$(echo "$CURRENT_VERSION" | sed 's/-SNAPSHOT$//')
+        
+        # Parse version components
+        if [[ "$BASE_VERSION" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+          MAJOR=${BASH_REMATCH[1]}
+          MINOR=${BASH_REMATCH[2]}
+          PATCH=${BASH_REMATCH[3]}
+        else
+          echo "Error: Version format not recognized. Expected format: MAJOR.MINOR.PATCH"
+          exit 1
+        fi
+        
+        # Calculate new version based on version-level
+        case "$VERSION_LEVEL" in
+          "major")
+            NEW_MAJOR=$((MAJOR + 1))
+            NEW_MINOR=0
+            NEW_PATCH=0
+            ;;
+          "minor")
+            NEW_MAJOR=$MAJOR
+            NEW_MINOR=$((MINOR + 1))
+            NEW_PATCH=0
+            ;;
+          "patch")
+            NEW_MAJOR=$MAJOR
+            NEW_MINOR=$MINOR
+            NEW_PATCH=$((PATCH + 1))
+            ;;
+        esac
+        
+        NEW_VERSION="${NEW_MAJOR}.${NEW_MINOR}.${NEW_PATCH}"
+        NEW_TAG="v${NEW_VERSION}"
+        
+        echo "New version: $NEW_VERSION"
+        echo "New tag: $NEW_TAG"
+        
+        # Check if tag already exists
+        if git rev-parse "$NEW_TAG" >/dev/null 2>&1; then
+          echo "Error: Tag $NEW_TAG already exists"
+          exit 1
+        fi
+        
+        # Update version in pom.xml using maven versions plugin
+        echo "Updating version in pom.xml..."
+        mvn versions:set -DnewVersion="$NEW_VERSION" -DgenerateBackupPoms=false
+        
+        # Commit the version change
+        git add pom.xml
+        # Also add any child module pom.xml files that may have been updated
+        find . -name "pom.xml" -not -path "./target/*" -exec git add {} \;
+        
+        git commit -m "Bump version to $NEW_VERSION"
+        
+        # Create and push tag
+        git tag "$NEW_TAG"
+        git push origin HEAD
+        git push origin "$NEW_TAG"
+        
+        echo "Successfully created and pushed tag: $NEW_TAG"
+        
+        # Set outputs
+        echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
+        echo "tag=$NEW_TAG" >> $GITHUB_OUTPUT
 
 # Define the branding for the action in the GitHub Marketplace
 branding:
-  icon: "award"
-  color: "blue"
+  icon: "tag"
+  color: "orange"
