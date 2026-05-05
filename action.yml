@@ -23,6 +23,9 @@ outputs:
 runs:
   using: "composite"
   steps:
+    - name: Token Exchange
+      uses: p6m-actions/token-exchange@v2
+
     - name: Set up Java
       uses: actions/setup-java@v4
       with:
