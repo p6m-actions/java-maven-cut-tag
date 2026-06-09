@@ -130,7 +130,7 @@ runs:
         git commit -m "Bump version to $NEW_VERSION"
         
         # Create and push tag
-        git tag "$NEW_TAG"
+        git tag -a "$NEW_TAG" -m "Release $NEW_TAG"
         git push origin HEAD
         git push origin "$NEW_TAG"
         
